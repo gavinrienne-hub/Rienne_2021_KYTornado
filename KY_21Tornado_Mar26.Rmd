@@ -1,0 +1,859 @@
+---
+title: "KY_2021_Tornado"
+output: html_document
+date: "2026-03-23"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+##Packages
+```{r message=FALSE}
+
+library(conflicted)
+
+# Set preferences for all conflicts explicitly
+conflict_prefer("filter", "dplyr")
+conflict_prefer("select", "dplyr")
+conflict_prefer("between", "dplyr")
+conflict_prefer("first", "dplyr")
+conflict_prefer("last", "dplyr")
+conflict_prefer("lag", "dplyr")
+conflict_prefer("lead", "dplyr")
+conflict_prefer("expand", "tidyr")
+conflict_prefer("pack", "tidyr")
+conflict_prefer("unpack", "tidyr")
+conflict_prefer("year", "lubridate")
+conflict_prefer("month", "lubridate")
+conflict_prefer("week", "lubridate")
+conflict_prefer("hour", "lubridate")
+conflict_prefer("minute", "lubridate")
+conflict_prefer("second", "lubridate")
+conflict_prefer("mday", "lubridate")
+conflict_prefer("wday", "lubridate")
+conflict_prefer("yday", "lubridate")
+conflict_prefer("isoweek", "lubridate")
+conflict_prefer("isoyear", "lubridate")
+conflict_prefer("quarter", "lubridate")
+conflict_prefer("transpose", "purrr")
+conflict_prefer("compose", "purrr")
+conflict_prefer("continuous_summary", "gtsummary")
+conflict_prefer("get_estimates", "tidycensus")
+
+library(tidyverse)
+library(foreign)
+library(broom)
+library(readxl)
+library(plm)
+library(tidycensus)
+library(MatchIt)
+library(countyhealthR)
+library(data.table)
+library(glmnet)
+library(lmtest)
+library(sandwich)
+library(fixest)
+library(modelsummary)
+library(tinytable)
+library(ggplot2)
+library(dplyr)
+library(gtsummary)
+library(flextable)
+
+```
+
+##Data Load
+
+```{r}
+
+ky_tnd_dat <- readRDS("C:/Users/Custom/Dropbox/Post Doctoral Work/Pittsburgh_MCH/Projects/Kentucky_Tornado_2021_Disaster/Data/ky_tornado_21_data.rds")
+
+#Add Tornado "Treatment Variable" for matching
+ky_tnd_dat <- ky_tnd_dat %>%
+  mutate(tornado = if_else(county == "Graves", 1,
+                    if_else(county == "Fulton", 1,
+                      if_else(county == "Hickman", 1,
+                       if_else(county == "Marshall", 1,
+                        if_else(county == "Lyon", 1, 
+                          if_else(county == "Caldwell", 1,
+                            if_else(county == "Hopkins", 1,
+                              if_else(county == "Muhlenberg", 1, 
+                                if_else(county == "Ohio", 1, 
+                                  if_else(county == "Breckinridge", 1, 
+                                    if_else(county == "Grayson", 1, 0)      
+                              )      
+                              )      
+                              )      
+                              )      
+                              )      
+                              )       
+                              )        
+                              )      
+                              )       
+                             ))
+#Make Treatment a factor
+ky_tnd_dat$tornado <- as.factor(ky_tnd_dat$tornado)
+
+#dput(names(ky_tnd_dat)) #List headers with ""
+
+#Selection
+dat <- ky_tnd_dat %>% select("county", "year", "tornado", "percent_foodinsecure", "percent_poverty", 
+"avg_number_snap", "avg_number_wic", contains("raw"))
+
+
+dat$percent_poverty <- as.numeric(dat$percent_poverty)
+dat$percent_foodinsecure <- as.numeric(dat$percent_foodinsecure)
+dat$avg_number_snap <- as.numeric(dat$avg_number_snap)
+dat$avg_number_wic <- as.numeric(dat$avg_number_wic)
+
+```
+
+Table 1
+```{r}
+
+# Step 1 — Convert proportions to percentages
+dat <- dat %>%
+  dplyr::mutate(
+    percent_foodinsecure                                        = percent_foodinsecure * 100,
+    `unemployment raw value`                                    = `unemployment raw value` * 100,
+    `children eligible for free or reduced price lunch raw value` = `children eligible for free or reduced price lunch raw value` * 100,
+    `long commute - driving alone raw value`                    = `long commute - driving alone raw value` * 100,
+    `children in single-parent households raw value`            = `children in single-parent households raw value` * 100,
+    `disconnected youth raw value`                              = `disconnected youth raw value` * 100,
+    `poor or fair health raw value`                             = `poor or fair health raw value` * 100,
+    `excessive drinking raw value`                              = `excessive drinking raw value` * 100,
+    `frequent physical distress raw value`                      = `frequent physical distress raw value` * 100,
+    `severe housing problems raw value`                         = `severe housing problems raw value` * 100,
+    `limited access to healthy foods raw value`                 = `limited access to healthy foods raw value` * 100
+  )
+
+# Step 2 — Recreate period variable
+dat$period <- ifelse(dat$year %in% c(2018, 2019, 2020), "pre",
+              ifelse(dat$year %in% c(2022, 2023), "post", NA_character_))
+
+# Step 3 — Subset
+df_pre  <- dat[dat$period == "pre" & !is.na(dat$period), ]
+df_post <- dat[dat$period == "post" & !is.na(dat$period), ]
+
+vars <- c("tornado", "percent_poverty", "percent_foodinsecure",
+          "unemployment raw value", "income inequality raw value",
+          "median household income raw value",
+          "children eligible for free or reduced price lunch raw value",
+          "long commute - driving alone raw value",
+          "children in single-parent households raw value",
+          "disconnected youth raw value", "poor or fair health raw value",
+          "excessive drinking raw value", "frequent physical distress raw value",
+          "severe housing problems raw value",
+          "limited access to healthy foods raw value")
+
+df_pre  <- df_pre[, vars]
+df_post <- df_post[, vars]
+
+# Step 4 — Labels
+var_labels <- list(
+  percent_poverty                                                 ~ "Children in Poverty (%)",
+  percent_foodinsecure                                            ~ "Food Insecure Children (%)",
+  `unemployment raw value`                                        ~ "Unemployment Rate (%)",
+  `income inequality raw value`                                   ~ "Income Inequality (Ratio)",
+  `median household income raw value`                             ~ "Median Household Income ($)",
+  `children eligible for free or reduced price lunch raw value`   ~ "Free/Reduced Lunch Eligible (%)",
+  `long commute - driving alone raw value`                        ~ "Long Commute — Driving Alone (%)",
+  `children in single-parent households raw value`                ~ "Single-Parent Households (%)",
+  `disconnected youth raw value`                                  ~ "Disconnected Youth (%)",
+  `poor or fair health raw value`                                 ~ "Poor or Fair Health (%)",
+  `excessive drinking raw value`                                  ~ "Excessive Drinking (%)",
+  `frequent physical distress raw value`                          ~ "Frequent Physical Distress (%)",
+  `severe housing problems raw value`                             ~ "Severe Housing Problems (%)",
+  `limited access to healthy foods raw value`                     ~ "Limited Access to Healthy Foods (%)"
+)
+
+# Step 5 — Build tables
+pre_table <- tbl_summary(
+  df_pre,
+  by = tornado,
+  label = var_labels,
+  statistic = all_continuous() ~ "{mean} ({sd})",
+  digits = all_continuous() ~ 2,
+  missing = "no"
+) %>%
+  modify_header(
+    stat_1 ~ "**Control Pre**",
+    stat_2 ~ "**Tornado Pre**"
+  )
+
+post_table <- tbl_summary(
+  df_post,
+  by = tornado,
+  label = var_labels,
+  statistic = all_continuous() ~ "{mean} ({sd})",
+  digits = all_continuous() ~ 2,
+  missing = "no"
+) %>%
+  modify_header(
+    stat_1 ~ "**Control Post**",
+    stat_2 ~ "**Tornado Post**"
+  )
+
+# Step 6 — Merge
+tbl_merge(
+  list(pre_table, post_table),
+  tab_spanner = c("**Pre-Event (2018–2020)**", "**Post-Event (2022–2023)**")
+)%>%
+  as_flex_table() %>%
+  flextable::save_as_docx(path = "C:/Users/Custom/Dropbox/Post Doctoral Work/Pittsburgh_MCH/Projects/Kentucky_Tornado_2021_Disaster/Data/table1_prepost.docx")
+
+
+
+
+```
+
+#Lasso Child Poverty
+```{r}
+#Run Lasso on Pre-Event Years Only
+
+dat$year <- as.numeric(dat$year)
+#1: 2018, 2:2019. 3:2020
+dat <- dat %>% filter(year < 4) %>% select(-year)
+
+
+# Define response variable as a vector
+y <- dat$percent_poverty
+
+# Handle NAs manually before matrix conversion
+pre_data_clean <- dat %>%
+  select(-county, -percent_poverty, -'children in poverty raw value', -`food insecurity raw value`, -percent_foodinsecure) %>%
+  mutate(across(everything(), ~ifelse(is.na(.), mean(., na.rm = TRUE), .)))
+
+# Convert to matrix directly
+x_matrix <- as.matrix(pre_data_clean)
+
+# Run cross-validated LASSO to find optimal lambda
+lasso_cv <- cv.glmnet(x_matrix, y, alpha = 1)  # alpha = 1 is LASSO
+
+# Plot cross-validation curve
+plot(lasso_cv)
+
+# Optimal lambda
+best_lambda <- lasso_cv$lambda.min  # or lambda.1se for more regularization
+
+# Extract selected coefficients
+lasso_coefs <- coef(lasso_cv, s = "lambda.min")
+print(lasso_coefs)
+
+# Check how many variables survive at different lambda values
+print(lasso_cv)
+
+
+# Extract non-zero variables (selected covariates)
+selected_vars <- rownames(lasso_coefs)[lasso_coefs[,1] != 0]
+selected_vars  # these go into your event study model
+
+
+# Try lambda.1se instead of lambda.min
+lasso_coefs_1se <- coef(lasso_cv, s = "lambda.1se")
+print(lasso_coefs_1se)
+
+# Extract non-zero variables (selected covariates)
+selected_vars <- rownames(lasso_coefs_1se)[lasso_coefs_1se[,1] != 0]
+selected_vars  # these go into your event study model
+
+```
+
+Hausman Test
+```{r}
+
+
+dat <- ky_tnd_dat %>% select("county", "year", "tornado", "percent_foodinsecure", "percent_poverty", 
+"avg_number_snap", "avg_number_wic", contains("raw"))
+
+
+dat$percent_poverty <- as.numeric(dat$percent_poverty)
+dat$percent_foodinsecure <- as.numeric(dat$percent_foodinsecure)
+dat$avg_number_snap <- as.numeric(dat$avg_number_snap)
+dat$avg_number_wic <- as.numeric(dat$avg_number_wic)
+
+# Set up panel data structure
+panel_data <- pdata.frame(dat, index = c("county", "year"))
+
+#dput(names(panel_data))
+
+# Run fixed effects model
+fe_model <- plm(percent_poverty ~ year + tornado + poor.or.fair.health.raw.value  +  excessive.drinking.raw.value  +  unemployment.raw.value  + income.inequality.raw.value  +  children.in.single.parent.households.raw.value  +  severe.housing.problems.raw.value  +  long.commute...driving.alone.raw.value  +  frequent.physical.distress.raw.value  + limited.access.to.healthy.foods.raw.value + disconnected.youth.raw.value + median.household.income.raw.value + children.in.single.parent.households.raw.value, 
+                data = panel_data, 
+                model = "within")
+
+# Run random effects model
+re_model <- plm(percent_poverty ~ year + tornado + poor.or.fair.health.raw.value  +  excessive.drinking.raw.value  +  unemployment.raw.value  + income.inequality.raw.value  +  children.in.single.parent.households.raw.value  +  severe.housing.problems.raw.value  +  long.commute...driving.alone.raw.value  +  frequent.physical.distress.raw.value  + limited.access.to.healthy.foods.raw.value + disconnected.youth.raw.value + median.household.income.raw.value + children.in.single.parent.households.raw.value, 
+                data = panel_data, 
+                model = "random")
+
+# Hausman test
+hausman_test <- phtest(fe_model, re_model)
+print(hausman_test)
+
+``` 
+
+
+
+```{r}
+
+# Create relative time indicators
+dat_rel <- dat %>%
+  mutate(year = as.numeric(as.character(year)),
+         rel_time = year - 2021) # 2021 = 0, 2018 = -3, 2023 = +2
+
+# Work on original data BEFORE pdata.frame()
+# First check what values tornado actually has
+unique(dat_rel$tornado)
+levels(dat_rel$tornado)
+
+dat_rel <- dat_rel %>%
+  mutate(
+    treated_km3 = ifelse(tornado == 1 & rel_time == -3, 1, 0),
+    treated_km2 = ifelse(tornado == 1 & rel_time == -2, 1, 0),
+    treated_km1 = ifelse(tornado == 1 & rel_time == -1, 1, 0),
+    treated_kp1 = ifelse(tornado == 1 & rel_time ==  1, 1, 0),
+    treated_kp2 = ifelse(tornado == 1 & rel_time ==  2, 1, 0)
+  )
+
+
+# Verify
+dat_rel %>%
+  summarise(
+    km3 = sum(treated_km3),
+    km2 = sum(treated_km2),
+    km1 = sum(treated_km1),
+    kp1 = sum(treated_kp1),
+    kp2 = sum(treated_kp2)
+  )
+
+
+# Set up panel
+panel_data <- pdata.frame(dat_rel, index = c("county", "year"))
+
+
+es_poverty <- feols(percent_poverty ~ 
+                      treated_km3 + treated_km2 + treated_km1 +
+                      treated_kp1 + treated_kp2 +
+                      poor.or.fair.health.raw.value +
+                      excessive.drinking.raw.value +
+                      unemployment.raw.value +
+                      income.inequality.raw.value +
+                      children.in.single.parent.households.raw.value +
+                      severe.housing.problems.raw.value +
+                      long.commute...driving.alone.raw.value +
+                      frequent.physical.distress.raw.value +
+                      limited.access.to.healthy.foods.raw.value +
+                      disconnected.youth.raw.value +
+                      median.household.income.raw.value |
+                      county + year,  # fixed effects go here
+                    cluster = ~county,
+                    data = panel_data)
+
+summary(es_poverty)
+
+```
+
+
+##Lasso Food Insecurity
+
+```{r}
+#Run Lasso on Pre-Event Years Only
+
+dat$year <- as.numeric(dat$year)
+#1: 2018, 2:2019. 3:2020
+dat <- dat %>% filter(year < 4) %>% select(-year)
+
+
+# Define response variable as a vector
+y <- dat$percent_foodinsecure
+
+# Handle NAs manually before matrix conversion
+pre_data_clean <- dat %>%
+  select(-county, -percent_poverty, -'children in poverty raw value', -`food insecurity raw value`, -percent_foodinsecure, -tornado) %>%
+  mutate(across(everything(), ~ifelse(is.na(.), mean(., na.rm = TRUE), .)))
+
+# Convert to matrix directly
+x_matrix <- as.matrix(pre_data_clean)
+
+# Run cross-validated LASSO to find optimal lambda
+lasso_cv <- cv.glmnet(x_matrix, y, alpha = 1)  # alpha = 1 is LASSO
+
+# Plot cross-validation curve
+plot(lasso_cv)
+
+# Optimal lambda
+best_lambda <- lasso_cv$lambda.min  # or lambda.1se for more regularization
+
+# Extract selected coefficients
+lasso_coefs <- coef(lasso_cv, s = "lambda.min")
+print(lasso_coefs)
+
+# Check how many variables survive at different lambda values
+print(lasso_cv)
+
+
+# Extract non-zero variables (selected covariates)
+selected_vars <- rownames(lasso_coefs)[lasso_coefs[,1] != 0]
+selected_vars  # these go into your event study model
+
+
+# Try lambda.1se instead of lambda.min
+lasso_coefs_1se <- coef(lasso_cv, s = "lambda.1se")
+print(lasso_coefs_1se)
+
+# Extract non-zero variables (selected covariates)
+selected_vars <- rownames(lasso_coefs_1se)[lasso_coefs_1se[,1] != 0]
+selected_vars  # these go into your event study model
+
+```
+
+Hausman Test
+```{r}
+
+# Set up panel data structure
+panel_data <- pdata.frame(dat, index = c("county", "year"))
+
+dput(names(panel_data))
+
+# Run fixed effects model
+fe_model <- plm(percent_foodinsecure ~ year + tornado + 
+                    adult.smoking.raw.value +
+                    food.environment.index.raw.value +
+                    excessive.drinking.raw.value +
+                    unemployment.raw.value +
+                    children.in.single.parent.households.raw.value +
+                    severe.housing.problems.raw.value +
+                    median.household.income.raw.value +
+                    high.school.graduation.raw.value +
+                    driving.alone.to.work.raw.value, 
+                data = panel_data, 
+                model = "within")
+
+# Run random effects model: Fails due to collinearity issues
+
+
+# Hausman test
+#hausman_test <- phtest(fe_model, re_model)
+#print(hausman_test)
+
+#fe_model <- plm(percent_poverty ~ tornado + factor(year) +
+ #               unemployment_raw_value +
+  #              income_inequality_raw_value +
+   #             # ... rest of your covariates
+    #            data = panel_data,
+     #           model = "within")
+
+``` 
+
+
+
+```{r}
+
+
+dat <- ky_tnd_dat %>% select("county", "year", "tornado", "percent_foodinsecure", "percent_poverty", 
+"avg_number_snap", "avg_number_wic", contains("raw"))
+
+
+dat$percent_poverty <- as.numeric(dat$percent_poverty)
+dat$percent_foodinsecure <- as.numeric(dat$percent_foodinsecure)
+dat$avg_number_snap <- as.numeric(dat$avg_number_snap)
+dat$avg_number_wic <- as.numeric(dat$avg_number_wic)
+
+
+# Create relative time indicators
+dat_rel <- dat %>%
+  mutate(year = as.numeric(as.character(year)),
+         rel_time = year - 2021) # 2021 = 0, 2018 = -3, 2023 = +2
+
+# Work on original data BEFORE pdata.frame()
+# First check what values tornado actually has
+unique(dat_rel$tornado)
+levels(dat_rel$tornado)
+
+dat_rel <- dat_rel %>%
+  mutate(
+    treated_km3 = ifelse(tornado == 1 & rel_time == -3, 1, 0),
+    treated_km2 = ifelse(tornado == 1 & rel_time == -2, 1, 0),
+    treated_km1 = ifelse(tornado == 1 & rel_time == -1, 1, 0),
+    treated_kp1 = ifelse(tornado == 1 & rel_time ==  1, 1, 0),
+    treated_kp2 = ifelse(tornado == 1 & rel_time ==  2, 1, 0)
+  )
+
+
+# Verify
+dat_rel %>%
+  summarise(
+    km3 = sum(treated_km3),
+    km2 = sum(treated_km2),
+    km1 = sum(treated_km1),
+    kp1 = sum(treated_kp1),
+    kp2 = sum(treated_kp2)
+  )
+
+
+# Set up panel
+panel_data <- pdata.frame(dat_rel, index = c("county", "year"))
+
+
+es_fsecure <- feols(percent_foodinsecure ~ 
+                      treated_km3 + treated_km2 + treated_km1 +
+                      treated_kp1 + treated_kp2 +
+                      adult.smoking.raw.value +
+                      food.environment.index.raw.value +
+                      excessive.drinking.raw.value +
+                      unemployment.raw.value +
+                      children.in.single.parent.households.raw.value +
+                      severe.housing.problems.raw.value +
+                      median.household.income.raw.value +
+                      high.school.graduation.raw.value +
+                      driving.alone.to.work.raw.value|
+                      county + year,  # fixed effects go here
+                    cluster = ~county,
+                    data = panel_data)
+
+summary(es_fsecure)
+
+```
+
+
+#Matched County Love Plot
+
+```{r}
+library(cobalt)
+
+# Create the love plot
+love.plot(
+  x = tornado ~ 
+    percent_poverty +
+    percent_foodinsecure +
+    `unemployment raw value` +
+    `income inequality raw value` +
+    `median household income raw value` +
+    `children eligible for free or reduced price lunch raw value` +
+    `long commute - driving alone raw value` +
+    `children in single-parent households raw value` +
+    `disconnected youth raw value` +
+    `poor or fair health raw value` +
+    `excessive drinking raw value` +
+    `frequent physical distress raw value` +
+    `severe housing problems raw value` +
+    `limited access to healthy foods raw value`,
+  data = dat %>% filter(year == 2019),
+  threshold = 0.1,          # reference line at SMD 0.1
+  var.order = "unadjusted", # order by SMD size
+  abs = TRUE,               # absolute SMD
+  title = "Covariate Balance: Tornado-Affected vs. Matched Control Counties (2019)",
+  labels = TRUE
+)
+
+```
+
+
+
+
+Table 2
+```{r}
+
+#Define pre and post periods
+df <- dat %>%
+  mutate(period = case_when(
+    year %in% c(2018, 2019, 2020) ~ "pre",
+    year %in% c(2022, 2023) ~ "post",
+    TRUE ~ NA_character_
+  )) %>%
+  filter(!is.na(period))
+
+# Function to calculate mean and SD
+mean_sd <- function(x) {
+  paste0(round(mean(x, na.rm = TRUE), 2), 
+         " (", round(sd(x, na.rm = TRUE), 2), ")")
+}
+
+# Generate summary table
+table2 <- df %>%
+  group_by(storm, period) %>%
+  summarise(
+    n = n_distinct(county),
+    children_poverty     = mean_sd(children_poverty),
+    food_insecure        = mean_sd(food_insecure),
+    unemployment         = mean_sd(unemployment),
+    income_inequality    = mean_sd(income_inequality),
+    median_hh_income     = mean_sd(median_hh_income),
+    free_lunch           = mean_sd(free_lunch),
+    long_commute         = mean_sd(long_commute),
+    single_parent        = mean_sd(single_parent),
+    disconnected_youth   = mean_sd(disconnected_youth),
+    poor_fair_health     = mean_sd(poor_fair_health),
+    excessive_drinking   = mean_sd(excessive_drinking),
+    freq_physical_dist   = mean_sd(freq_physical_dist),
+    severe_housing       = mean_sd(severe_housing),
+    limited_food_access  = mean_sd(limited_food_access),
+    .groups = "drop"
+  ) %>%
+  mutate(group = case_when(
+    storm == 1 & period == "pre"  ~ "Tornado Pre",
+    storm == 1 & period == "post" ~ "Tornado Post",
+    storm == 0 & period == "pre"  ~ "Control Pre",
+    storm == 0 & period == "post" ~ "Control Post"
+  )) %>%
+  select(group, everything(), -storm, -period)
+
+# Pivot to wide format for table
+table2_wide <- table2 %>%
+  pivot_longer(cols = -group, names_to = "characteristic", values_to = "value") %>%
+  pivot_wider(names_from = group, values_from = value)
+
+# View
+print(table2_wide)
+
+# Export to CSV for reference
+#write_csv(table2_wide, "table2_pre_post_summary.csv")
+
+
+```
+
+
+
+Pooled Regression Tables
+```{r}
+
+# Create named list of models
+models <- list(
+  "Child Poverty" = es_poverty,
+  "Food Insecurity" = es_fsecure
+)
+
+# Clean coefficient names for display
+coef_map <- c(
+  "treated_km3" = "2018 (k-3)",
+  "treated_km2" = "2019 (k-2)",
+  "treated_km1" = "2020 (k-1, COVID)",
+  "treated_kp1" = "2022 (k+1)",
+  "treated_kp2" = "2023 (k+2)",
+  "poor or fair health raw value" = "Poor/Fair Health",
+  "excessive drinking raw value" = "Excessive Drinking",
+  "unemployment raw value" = "Unemployment",
+  "income inequality raw value" = "Income Inequality",
+  "children in single-parent households raw value" = "Single-Parent Households",
+  "severe housing problems raw value" = "Severe Housing Problems",
+  "long commute - driving alone raw value" = "Long Commute (Driving Alone)",
+  "frequent physical distress raw value" = "Frequent Physical Distress",
+  "limited access to healthy foods raw value" = "Limited Food Access",
+  "disconnected youth raw value" = "Disconnected Youth",
+  "median household income raw value" = "Median Household Income",
+  "children eligible for free or reduced price lunch raw value" = "Free/Reduced Lunch Eligible",
+  "adult smoking raw value" = "Adult Smoking",
+  "food environment index raw value" = "Food Environment Index",
+  "high school graduation raw value" = "High School Graduation",
+  "driving alone to work raw value" = "Driving Alone to Work"
+)
+
+# Generate table
+modelsummary(
+  models,
+  coef_map = coef_map,
+  stars = c("*" = 0.05, "**" = 0.01, "***" = 0.001),
+  gof_map = c("nobs", "r.squared", "adj.r.squared"),
+  title = "Event Study Results: Child Poverty and Food Insecurity Following the 2021 Kentucky Tornado Outbreak",
+  notes = "Fixed effects for county and year. Standard errors clustered at county level. Reference period: 2021 (event year).",
+  output = "C:/Users/Custom/Dropbox/Post Doctoral Work/Pittsburgh_MCH/Kentucky_Tornado_2021_Disaster/Data/tornado_cross_table.docx"  # saves directly to Word
+)
+
+```
+
+Event Plot
+
+Children in Poverty
+```{r}
+
+
+# Child poverty event study results
+poverty_es <- data.frame(
+  period = c(-3, -2, -1, 1, 2),
+  estimate = c(-0.5763, 4.0634, 2.7963, -2.1405, -0.3313),
+  se = c(3.0624, 2.4685, 2.9149, 5.0065, 4.9698)
+) %>%
+  mutate(
+    ci_low  = estimate - 1.96 * se,
+    ci_high = estimate + 1.96 * se,
+    period_label = as.character(c("k-3", "k-2", "k-1", "k+1", "k+2")),
+    post = ifelse(period > 0, "Post-Event", "Pre-Event")
+  )
+
+# Add reference period k=0
+poverty_es <- poverty_es %>%
+  bind_rows(
+    data.frame(
+      period = 0, estimate = 0, se = 0,
+      ci_low = 0, ci_high = 0,
+      period_label = "k0", post = "Reference"
+    )
+  ) %>%
+  mutate(
+    period_label = factor(period_label,
+                          levels = c("k-3","k-2","k-1","k0","k+1","k+2")),
+    post = factor(post, levels = c("Pre-Event","Reference","Post-Event"))
+  )
+
+# Plot
+ggplot(poverty_es, aes(x = period_label, y = estimate, color = post, shape = post)) +
+
+  # Reference lines
+  geom_hline(yintercept = 0, linetype = "dashed", color = "grey50", linewidth = 0.5) +
+  geom_vline(xintercept = 3.5, linetype = "dotted", color = "grey60", linewidth = 0.5) +
+
+  # Confidence intervals
+  geom_errorbar(aes(ymin = ci_low, ymax = ci_high),
+                width = 0.15, linewidth = 0.6) +
+
+  # Point estimates
+  geom_point(size = 3) +
+
+  # Colors and shapes — matching food insecurity scheme
+  scale_color_manual(
+    values = c("Pre-Event" = "#2E5090", "Reference" = "grey40", "Post-Event" = "#0F6E56"),
+    name = NULL
+  ) +
+  scale_shape_manual(
+    values = c("Pre-Event" = 16, "Reference" = 1, "Post-Event" = 16),
+    name = NULL
+  ) +
+
+  # Annotation
+  annotate("text", x = 3.5, y = max(poverty_es$ci_high) + 1.5,
+           label = "Tornado\noutbreak", size = 3, color = "grey40",
+           hjust = 0.5, lineheight = 0.9) +
+
+  # Labels
+  labs(
+    title = "Event Study: Effect of 2021 Tornado Outbreak on Children in Poverty",
+    subtitle = "Tornado-affected vs. matched control counties, Kentucky 2018–2023",
+    x = "Period relative to tornado outbreak (k)",
+    y = "Estimated effect on children in poverty (%)",
+    caption = "Note: Estimates from two-way fixed effects model with county and year fixed effects.\nReference period k = −1 omitted. Error bars represent 95% confidence intervals.\nStandard errors clustered at county level."
+  ) +
+
+  # Theme — matching food insecurity
+  theme_minimal(base_family = "serif", base_size = 12) +
+  theme(
+    plot.title    = element_text(face = "bold", size = 13),
+    plot.subtitle = element_text(color = "grey40", size = 10),
+    plot.caption  = element_text(color = "grey50", size = 8, hjust = 0),
+    legend.position = "bottom",
+    panel.grid.minor = element_blank(),
+    panel.grid.major.x = element_blank(),
+    axis.line = element_line(color = "grey80", linewidth = 0.4)
+  )
+
+# Save
+ggsave("C:/Users/Custom/Dropbox/Post Doctoral Work/Pittsburgh_MCH/Projects/Kentucky_Tornado_2021_Disaster/Data/event_study_poverty.png", width = 7, height = 5, dpi = 300)
+ggsave("C:/Users/Custom/Dropbox/Post Doctoral Work/Pittsburgh_MCH/Projects/Kentucky_Tornado_2021_Disaster/Data/event_study_poverty.pdf", width = 7, height = 5)
+
+```
+
+
+```{r}
+
+# Food insecurity event study results
+food_insecurity_es <- data.frame(
+  period = c(-3, -2, -1, 1, 2),
+  estimate = c(-0.010765127, -0.004972096, 0.004941898, 0.000496537, 0.000638817),
+  se = c(0.011193929, 0.009530365, 0.007501369, 0.007108415, 0.007287591)
+) %>%
+  mutate(
+    ci_low  = estimate - 1.96 * se,
+    ci_high = estimate + 1.96 * se,
+    period_label = factor(period, 
+                          levels = c(-3, -2, -1, 1, 2),
+                          labels = c("k-3", "k-2", "k-1", "k+1", "k+2")),
+    post = ifelse(period > 0, "Post-Event", "Pre-Event")
+  )
+
+# Add reference period k=0 (omitted, estimate = 0)
+reference <- data.frame(
+  period = 0,
+  estimate = 0,
+  se = 0,
+  ci_low = 0,
+  ci_high = 0,
+  period_label = factor("k0", levels = c("k-3","k-2","k-1","k0","k+1","k+2")),
+  post = "Reference"
+)
+
+# Rebuild with reference included
+food_insecurity_es <- food_insecurity_es %>%
+  mutate(period_label = as.character(period_label)) %>%
+  bind_rows(
+    data.frame(
+      period = 0, estimate = 0, se = 0,
+      ci_low = 0, ci_high = 0,
+      period_label = "k0", post = "Reference"
+    )
+  ) %>%
+  mutate(
+    period_label = factor(period_label, 
+                          levels = c("k-3","k-2","k-1","k0","k+1","k+2")),
+    post = factor(post, levels = c("Pre-Event","Reference","Post-Event"))
+  )
+
+# Plot
+ggplot(food_insecurity_es, aes(x = period_label, y = estimate, color = post, shape = post)) +
+  
+  # Reference lines
+  geom_hline(yintercept = 0, linetype = "dashed", color = "grey50", linewidth = 0.5) +
+  geom_vline(xintercept = 3.5, linetype = "dotted", color = "grey60", linewidth = 0.5) +
+  
+  # Confidence intervals
+  geom_errorbar(aes(ymin = ci_low, ymax = ci_high),
+                width = 0.15, linewidth = 0.6) +
+  
+  # Point estimates
+  geom_point(size = 3) +
+  
+  # Colors and shapes
+  scale_color_manual(
+    values = c("Pre-Event" = "#2E5090", "Reference" = "grey40", "Post-Event" = "#0F6E56"),
+    name = NULL
+  ) +
+  scale_shape_manual(
+    values = c("Pre-Event" = 16, "Reference" = 1, "Post-Event" = 16),
+    name = NULL
+  ) +
+  
+  # Annotation
+  annotate("text", x = 3.5, y = max(food_insecurity_es$ci_high) + 0.003,
+           label = "Tornado\noutbreak", size = 3, color = "grey40",
+           hjust = 0.5, lineheight = 0.9) +
+  
+  # Labels
+  labs(
+    title = "Event Study: Effect of 2021 Tornado Outbreak on Child Food Insecurity",
+    subtitle = "Tornado-affected vs. matched control counties, Kentucky 2018–2023",
+    x = "Period relative to tornado outbreak (k)",
+    y = "Estimated effect on food insecurity rate",
+    caption = "Note: Estimates from two-way fixed effects model with county and year fixed effects.\nReference period k = −1 omitted. Error bars represent 95% confidence intervals.\nStandard errors clustered at county level."
+  ) +
+  
+  # Theme
+  theme_minimal(base_family = "serif", base_size = 12) +
+  theme(
+    plot.title    = element_text(face = "bold", size = 13),
+    plot.subtitle = element_text(color = "grey40", size = 10),
+    plot.caption  = element_text(color = "grey50", size = 8, hjust = 0),
+    legend.position = "bottom",
+    panel.grid.minor = element_blank(),
+    panel.grid.major.x = element_blank(),
+    axis.line = element_line(color = "grey80", linewidth = 0.4)
+  )
+
+# Save
+
+
+ggsave("C:/Users/Custom/Dropbox/Post Doctoral Work/Pittsburgh_MCH/Projects/Kentucky_Tornado_2021_Disaster/Data/event_study_food_insecurity.png", width = 7, height = 5, dpi = 300)
+ggsave("C:/Users/Custom/Dropbox/Post Doctoral Work/Pittsburgh_MCH/Projects/Kentucky_Tornado_2021_Disaster/Data/event_study_food_insecurity.pdf", width = 7, height = 5)
+
+```
