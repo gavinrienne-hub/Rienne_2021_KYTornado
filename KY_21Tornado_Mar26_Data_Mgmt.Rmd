@@ -1,0 +1,330 @@
+---
+title: "KY_2021_Tornado"
+output: html_document
+date: "2026-03-23"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+##Packages
+```{r message=FALSE}
+
+library(tidyverse)
+library(foreign)
+library(broom)
+library(readxl)
+library(plm)
+library(tidycensus)
+library(MatchIt)
+library(countyhealthR)
+library(data.table)
+
+```
+
+##ACS Data 
+
+Matching
+```{r}
+
+#Load ACS Data Using Tidy Census
+Income <- get_acs(
+geography = "county",
+variables = "B19013_001",# Household Income
+state = "KY",
+output = "wide", # creates output with one row for each county
+#geometry = TRUE, When wanting column for GIS work
+year = 2021 #Using 2021 as our baseline year for comparison and matching
+)
+
+
+# Split the 'items' column into multiple new columns 
+Income <- Income %>%
+  separate_wider_delim(
+    NAME,
+    delim = ",",
+    names = c("County", "State"),
+    too_few = "align_start" # Aligns items to the start, filling missing with NA
+  )
+
+#Remove County from Row for matching 
+Income <- Income %>%
+  separate_wider_delim(
+    County,
+    delim = " ",
+    names = c("County", "Del"),
+    too_few = "align_start" # Aligns items to the start, filling missing with NA
+  )
+
+#ACS Data with Population by County
+Cty_pop <- get_acs(
+geography = "county",
+variables = "B01003_001",# Population By County
+state = "KY",
+output = "wide", # creates output with one row for each county
+year = 2021
+)
+
+# Split the 'items' column into multiple new columns (e.g., up to 3)
+Cty_pop <- Cty_pop %>%
+  separate_wider_delim(
+    NAME,
+    delim = ",",
+    names = c("County", "State"),
+    too_few = "align_start" # Aligns items to the start, filling missing with NA
+  )
+
+#Remove County from Row for matching
+Cty_pop <- Cty_pop %>%
+  separate_wider_delim(
+    County,
+    delim = " ",
+    names = c("County", "Del"),
+    too_few = "align_start" # Aligns items to the start, filling missing with NA
+  )
+
+#Merge DFs and remove the County Extra Column
+cty_match <- left_join(Cty_pop, Income, by = c("GEOID", "County", "State", "Del")) 
+cty_match <- select(cty_match, -Del)
+
+#Add Tornado "Treatment Variable" for matching
+cty_match <- cty_match %>%
+  mutate(tornado = if_else(County == "Graves", 1,
+                    if_else(County == "Fulton", 1,
+                      if_else(County == "Hickman", 1,
+                       if_else(County == "Marshall", 1,
+                        if_else(County == "Lyon", 1, 
+                          if_else(County == "Caldwell", 1,
+                            if_else(County == "Hopkins", 1,
+                              if_else(County == "Muhlenberg", 1, 
+                                if_else(County == "Ohio", 1, 
+                                  if_else(County == "Breckinridge", 1, 
+                                    if_else(County == "Grayson", 1, 0)      
+                              )      
+                              )      
+                              )      
+                              )      
+                              )      
+                              )       
+                              )        
+                              )      
+                              )       
+                             ))
+
+
+
+#Matching on Median Income and Mean Population
+m.out <- matchit(tornado ~ B01003_001E + B19013_001E, data = cty_match, ratio = 2 ,method = "nearest")
+summary(m.out, un = FALSE) # un = FALSE shows only matched results
+matched_data <- match.data(m.out)
+
+
+# Convert the column to a comma-separated string
+match_string <- toString(matched_data$County)
+
+# Print the result
+print(match_string)
+
+
+rm(cty_match)
+rm(m.out)
+rm(Cty_pop)
+rm(Income)
+rm(match_string)
+
+#Save Data
+
+#acs_match <- readRDS(matched_data, file = "C:/Users/Custom/Dropbox/Post Doctoral Work/Pittsburgh_MCH/Kentucky_Tornado_2021_Disaster/Data/ACS_KY/match_ky.rds")
+
+```
+
+
+##KIDS Count Data Load & Management
+```{r message=FALSE}
+
+#child_poverty_rate_single_year_estimates: Percent of children living below the official federal poverty level.
+c_pov <- read_excel("C:/Users/Custom/Dropbox/Post Doctoral Work/Pittsburgh_MCH/Kentucky_Tornado_2021_Disaster/Data/Kids_Count/Child poverty rate (single-year estimates).xlsx")
+
+c_pov <- c_pov %>%
+  rename(County = Location, Percent_Poverty = Data, Year = TimeFrame)
+
+#Children_living_in_food_insecure_households: Percentage of children who live in households that at times lack access to enough food for healthy living or unreliable availability to nutritionally adequate foods. 
+c_food <- read_excel("C:/Users/Custom/Dropbox/Post Doctoral Work/Pittsburgh_MCH/Kentucky_Tornado_2021_Disaster/Data/Kids_Count/Children living in food insecure households (2018 and beyond).xlsx")
+
+c_food <- c_food %>%
+  rename(County = Location, Percent_FoodInsecure = Data, Year = TimeFrame)
+
+#Children_receiving_aid_from_Supplemental_Nutrition_Assistance_Program_monthly_average: Average monthly number of children under 18 who participated in the Supplemental Nutrition Assistance Program (SNAP), formerly called food stamps. 
+c_snap <- read_excel("C:/Users/Custom/Dropbox/Post Doctoral Work/Pittsburgh_MCH/Kentucky_Tornado_2021_Disaster/Data/Kids_Count/Children receiving aid from Supplemental Nutrition Assistance Program (monthly average).xlsx")
+
+c_snap <- c_snap %>%
+  rename(County = Location, Avg_number_snap = Data, Year = TimeFrame)
+
+#Infants_and_children_receiving_Women_Infants_and_Children: Average monthly number of infants and children up to age 5 served by the Special Supplemental Nutrition Program for Women, Infants, and Children (WIC).
+ 
+c_wic <- read_excel("C:/Users/Custom/Dropbox/Post Doctoral Work/Pittsburgh_MCH/Kentucky_Tornado_2021_Disaster/Data/Kids_Count/Infants and children receiving Women, Infants, and Children assistance (monthly average).xlsx")
+
+c_wic <- c_wic %>%
+  rename(County = Location, Avg_number_wic = Data, Year = TimeFrame)
+
+#Join All KIDS Count
+kids_count <- c_food %>%
+  left_join(c_pov, by =c("LocationType", "County", "Year")) %>%
+  left_join(c_snap, by =c("LocationType", "County", "Year")) %>%
+  left_join(c_wic, by =c("LocationType", "County", "Year"))
+
+kids_count <- select(kids_count, -DataFormat.x)
+kids_count <- select(kids_count, -DataFormat.y)
+kids_count <- select(kids_count, -DataFormat.x.x)
+kids_count <- select(kids_count, -DataFormat.y.y)
+
+
+rm(c_food)
+rm(c_pov)
+rm(c_snap)
+rm(c_wic)
+
+# Save the data frame as an RDS file
+#saveRDS(kids_count, file = "C:/Users/Custom/Dropbox/Post Doctoral Work/Pittsburgh_MCH/Kentucky_Tornado_2021_Disaster/Data/CHR_2018_2024/kids_count.rds")
+```
+
+
+```{r}
+
+kids_count <- readRDS("C:/Users/Custom/Dropbox/Post Doctoral Work/Pittsburgh_MCH/Kentucky_Tornado_2021_Disaster/Data/Kids_Count/kids_count.rds")
+
+```
+
+##RWJF
+
+"Ballard", "Bath", "Bourbon", "Boyle", "Bracken", "Breckinridge", "Caldwell", "Carlisle", "Carter", "Edmonson", "Floyd", "Fulton", "Gallatin", "Grant", "Graves", "Grayson", "Hancock", "Hickman", "Hopkins", "Knox", "Lincoln", "Logan", "Lyon", "Marshall", "Meade", "Muhlenberg", "Nelson", "Ohio", "Owsley", "Perry", "Shelby", "Wayne", "Whitley"
+
+Data Load & Reduction
+```{r}
+
+#Load Data
+chr_2018 <- read_csv("C:/Users/Custom/Dropbox/Post Doctoral Work/Pittsburgh_MCH/Kentucky_Tornado_2021_Disaster/Data/CHR_2018_2024/analytic_data2018_0.csv")
+colnames(chr_2018) <- tolower(colnames(chr_2018))
+
+#dput(names(chr_2018)) List headers with ""
+
+chr_2019 <- read_csv("C:/Users/Custom/Dropbox/Post Doctoral Work/Pittsburgh_MCH/Kentucky_Tornado_2021_Disaster/Data/CHR_2018_2024/analytic_data2019.csv")
+colnames(chr_2019) <- tolower(colnames(chr_2019))
+
+chr_2020 <- read_csv("C:/Users/Custom/Dropbox/Post Doctoral Work/Pittsburgh_MCH/Kentucky_Tornado_2021_Disaster/Data/CHR_2018_2024/analytic_data2020_0.csv")
+colnames(chr_2020) <- tolower(colnames(chr_2020))
+
+chr_2021 <- read_csv("C:/Users/Custom/Dropbox/Post Doctoral Work/Pittsburgh_MCH/Kentucky_Tornado_2021_Disaster/Data/CHR_2018_2024/analytic_data2021.csv")
+colnames(chr_2021) <- tolower(colnames(chr_2021))
+
+chr_2022 <- read_csv("C:/Users/Custom/Dropbox/Post Doctoral Work/Pittsburgh_MCH/Kentucky_Tornado_2021_Disaster/Data/CHR_2018_2024/analytic_data2022.csv")
+colnames(chr_2022) <- tolower(colnames(chr_2022))
+
+chr_2023 <- read_csv("C:/Users/Custom/Dropbox/Post Doctoral Work/Pittsburgh_MCH/Kentucky_Tornado_2021_Disaster/Data/CHR_2018_2024/analytic_data2023_0.csv")
+colnames(chr_2023) <- tolower(colnames(chr_2023))
+
+chr_2024 <- read_csv("C:/Users/Custom/Dropbox/Post Doctoral Work/Pittsburgh_MCH/Kentucky_Tornado_2021_Disaster/Data/CHR_2018_2024/analytic_data2024.csv")
+colnames(chr_2024) <- tolower(colnames(chr_2024))
+
+#Match on FIPS/GEOID
+
+#Find Match Columns with intersect
+#RBind on only columns that are in the intersected list
+
+#2018|2019
+InBoth <- intersect(colnames(chr_2018), colnames(chr_2019))
+chr_comb <- rbind(chr_2018[,InBoth], chr_2019[,InBoth])
+
+#2020
+
+InBoth <- intersect(colnames(chr_comb), colnames(chr_2020))
+chr_comb <- rbind(chr_comb[,InBoth], chr_2020[,InBoth])
+
+#2021
+
+InBoth <- intersect(colnames(chr_comb), colnames(chr_2021))
+chr_comb <- rbind(chr_comb[,InBoth], chr_2021[,InBoth])
+
+#2022
+
+InBoth <- intersect(colnames(chr_comb), colnames(chr_2022))
+chr_comb <- rbind(chr_comb[,InBoth], chr_2022[,InBoth])
+
+#2023
+
+InBoth <- intersect(colnames(chr_comb), colnames(chr_2023))
+chr_comb <- rbind(chr_comb[,InBoth], chr_2023[,InBoth])
+
+#2024
+
+InBoth <- intersect(colnames(chr_comb), colnames(chr_2024))
+chr_comb_final <- rbind(chr_comb[,InBoth], chr_2024[,InBoth])
+
+#saveRDS(chr_comb_final, file = "C:/Users/Custom/Dropbox/Post Doctoral Work/Pittsburgh_MCH/Kentucky_Tornado_2021_Disaster/Data/CHR_2018_2024/chr_ky_2018_2024.rds")
+
+```
+
+
+```{r}
+
+chr_ky_1824 <- readRDS("C:/Users/Custom/Dropbox/Post Doctoral Work/Pittsburgh_MCH/Kentucky_Tornado_2021_Disaster/Data/CHR_2018_2024/chr_ky_2018_2024.rds")
+
+```
+
+
+#Data Merge
+```{r}
+
+##ACS Data
+acs_match <- readRDS("C:/Users/Custom/Dropbox/Post Doctoral Work/Pittsburgh_MCH/Kentucky_Tornado_2021_Disaster/Data/ACS_KY/match_ky.rds")
+colnames(acs_match) <- tolower(colnames(acs_match))
+#Extract Matched Columns
+acs <- acs_match %>% select("geoid", "county")
+
+rm(acs_match)
+
+#RWJF Data
+chr_ky_1824 <- readRDS("C:/Users/Custom/Dropbox/Post Doctoral Work/Pittsburgh_MCH/Kentucky_Tornado_2021_Disaster/Data/CHR_2018_2024/chr_ky_2018_2024.rds")
+colnames(chr_ky_1824) <- tolower(colnames(chr_ky_1824))
+
+
+#Merge DFs and remove the County Extra Column
+comb_df <- left_join(chr_ky_1824, acs, by = c("geoid")) 
+
+comb_df$county <- as.factor(comb_df$county)
+comb_df$year <- as.factor(comb_df$year)
+
+
+##KIDS Count Data
+kids_count <- readRDS("C:/Users/Custom/Dropbox/Post Doctoral Work/Pittsburgh_MCH/Kentucky_Tornado_2021_Disaster/Data/Kids_Count/kids_count.rds")
+colnames(kids_count) <- tolower(colnames(kids_count))
+
+kids_count$county <- as.factor(kids_count$county)
+kids_count$year <- as.factor(kids_count$year)
+
+#Merge DFs and remove the County Extra Column
+comb_final <- left_join(kids_count, comb_df, by = c("year", "county"))
+
+
+values_to_keep <- c("Ballard", "Bath", "Bourbon", "Boyle", "Bracken", "Breckinridge", "Caldwell", "Carlisle", "Carter", "Edmonson", "Floyd", "Fulton", "Gallatin", "Grant", "Graves", "Grayson", "Hancock", "Hickman", "Hopkins", "Knox", "Lincoln", "Logan", "Lyon", "Marshall", "Meade", "Muhlenberg", "Nelson", "Ohio", "Owsley", "Perry", "Shelby", "Wayne", "Whitley")
+filtered_data <- comb_final %>%
+  filter(county %in% values_to_keep)
+
+#dput(names(filtered_data)) #List headers with ""
+
+# Remove columns that contain the word "Numerator and Denominator"
+filtered_data <- filtered_data %>%
+  select(-contains("numerator"))
+
+filtered_data <- filtered_data %>%
+  select(-contains("denominator"))
+
+# Remove columns B and D
+filtered_data <- select(filtered_data, -geoid, -name, -locationtype, -"state abbreviation")
+
+#saveRDS(filtered_data, file = "C:/Users/Custom/Dropbox/Post Doctoral Work/Pittsburgh_MCH/Kentucky_Tornado_2021_Disaster/Data/ky_tornado_21_data.rds")
+
+```
